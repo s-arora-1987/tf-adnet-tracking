@@ -106,7 +106,7 @@ class ADNetwork:
                 val = np.zeros(var.shape)
             else:
                 val = weights[key]
-
+                print(key)
                 # need to make same shape.
                 val = np.reshape(val, var.shape.as_list())
 
@@ -117,21 +117,28 @@ class ADNetwork:
 
         return weights
 
-    def create_network(self, input_tensor, label_tensor, class_tensor, action_history_tensor, is_training):
-        self.input_tensor = input_tensor
-        self.label_tensor = label_tensor
-        self.class_tensor = class_tensor
-        self.action_history_tensor = action_history_tensor
+    def roi_net(self,net):
+        net = slim.pool(net, [3, 3], 'AVG', stride=3, padding='VALID', scope='pool_roi_1')
+        net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='pool_roi_2')
 
-        # feature extractor - convolutions
-        net = slim.convolution(input_tensor, 96, [7, 7], 2, padding='VALID', scope='conv1',
-                               activation_fn=tf.nn.relu)
-        net = tf.nn.lrn(net, depth_radius=5, bias=2, alpha=1e-4*5, beta=0.75)
-        net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='pool1')
+        # auxilaries
+        out_actions = flatten_convolution(net)
+        out_scores = flatten_convolution(net)
+        self.layer_actions = tf.nn.softmax(out_actions)
+        self.layer_scores = tf.nn.softmax(out_scores)
+
+        # losses
+        self.loss_actions = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_tensor, logits=out_actions)
+        self.loss_cls = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.class_tensor, logits=out_scores)
+
+        return net
+
+
+    def non_roi(self,net,is_training,action_history_tensor):
 
         net = slim.convolution(net, 256, [5, 5], 2, padding='VALID', scope='conv2',
                                activation_fn=tf.nn.relu)
-        net = tf.nn.lrn(net, depth_radius=5, bias=2, alpha=1e-4*5, beta=0.75)
+        net = tf.nn.lrn(net, depth_radius=5, bias=2, alpha=1e-4 * 5, beta=0.75)
         net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='pool2')
 
         net = slim.convolution(net, 512, [3, 3], 1, padding='VALID', scope='conv3',
@@ -151,15 +158,15 @@ class ADNetwork:
         # auxilaries
         out_actions = slim.convolution(net, 11, [1, 1], 1, padding='VALID', scope='fc6_1', activation_fn=None)
         out_scores = slim.convolution(net, 2, [1, 1], 1, padding='VALID', scope='fc6_2', activation_fn=None)
+
         out_actions = flatten_convolution(out_actions)
         out_scores = flatten_convolution(out_scores)
         self.layer_actions = tf.nn.softmax(out_actions)
         self.layer_scores = tf.nn.softmax(out_scores)
 
         # losses
-        self.loss_actions = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_tensor, logits=out_actions)
-        self.loss_cls = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=class_tensor, logits=out_scores)
-
+        self.loss_actions = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_tensor, logits=out_actions)
+        self.loss_cls = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.class_tensor, logits=out_scores)
         # finetune ops
         var_fc = [var for var in tf.trainable_variables() if 'fc' in var.name and 'fc6_2' not in var.name]
         self.var_grads_fc1 = var_fc
@@ -168,16 +175,16 @@ class ADNetwork:
         for var, grad in zip(var_fc, gradients1):
             self.weighted_grads_fc1.append(10 * grad)
             continue
-            if 'fc6_1/weights' in var.name:
-                self.weighted_grads_fc1.append(20 * grad)
-            elif 'fc6_1/biases' in var.name:
-                self.weighted_grads_fc1.append(40 * grad)
-            elif 'weights' in var.name:
-                self.weighted_grads_fc1.append(20 * grad)
-            elif 'biases' in var.name:
-                self.weighted_grads_fc1.append(10 * grad)
-            else:
-                raise
+            # if 'fc6_1/weights' in var.name:
+            #     self.weighted_grads_fc1.append(20 * grad)
+            # elif 'fc6_1/biases' in var.name:
+            #     self.weighted_grads_fc1.append(40 * grad)
+            # elif 'weights' in var.name:
+            #     self.weighted_grads_fc1.append(20 * grad)
+            # elif 'biases' in var.name:
+            #     self.weighted_grads_fc1.append(10 * grad)
+            # else:
+            #     raise
 
         var_fc = [var for var in tf.trainable_variables() if 'fc' in var.name and 'fc6_1' not in var.name]
         self.var_grads_fc2 = var_fc
@@ -186,16 +193,63 @@ class ADNetwork:
         for var, grad in zip(var_fc, gradients2):
             self.weighted_grads_fc2.append(10 * grad)
             continue
-            if 'weights' in var.name:
-                self.weighted_grads_fc2.append(20 * grad)
-            elif 'biases' in var.name:
-                self.weighted_grads_fc2.append(10 * grad)
-            else:
-                raise
+            # if 'weights' in var.name:
+            #     self.weighted_grads_fc2.append(20 * grad)
+            # elif 'biases' in var.name:
+            #     self.weighted_grads_fc2.append(10 * grad)
+            # else:
+            #     raise
 
         self.weighted_grads_op1 = self.optimizer.apply_gradients(zip(self.weighted_grads_fc1, self.var_grads_fc1))
         self.weighted_grads_op2 = self.optimizer.apply_gradients(zip(self.weighted_grads_fc2, self.var_grads_fc2))
+        return net
 
+    def create_network(self, input_tensor, label_tensor, class_tensor, action_history_tensor, is_training,roi):
+        self.input_tensor = input_tensor
+        self.label_tensor = label_tensor
+        self.class_tensor = class_tensor
+        self.action_history_tensor = action_history_tensor
+
+        # feature extractor - convolutions
+        net = slim.convolution(input_tensor, 96, [7, 7], 2, padding='VALID', scope='conv1',
+                               activation_fn=tf.nn.relu)
+
+        net = tf.nn.lrn(net, depth_radius=5, bias=2, alpha=1e-4*5, beta=0.75)
+        net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='pool1')
+
+        # net=self.roi_net(net)
+        # net=self.non_roi(net_2)
+        net = self.non_roi(net, is_training, action_history_tensor)
+        # net = tf.cond(tf.equal(roi,True),lambda: self.roi_net(net),lambda: self.non_roi(net,is_training,action_history_tensor))
+
+        return
+
+    def roi_net_withsaver(self, input_tensor, label_tensor, class_tensor):
+
+        self.input_tensor = input_tensor
+        self.label_tensor = label_tensor
+        self.class_tensor = class_tensor
+        # feature extractor - convolutions
+        net = slim.convolution(input_tensor, 96, [7, 7], 2, padding='VALID', scope='convr',
+                               activation_fn=tf.nn.relu)
+
+        net = tf.nn.lrn(net, depth_radius=5, bias=2, alpha=1e-4*5, beta=0.75)
+        net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='poolr')
+
+        net = slim.pool(net, [3, 3], 'AVG', stride=3, padding='VALID', scope='pool_roi_1')
+        net = slim.pool(net, [3, 3], 'MAX', stride=2, padding='VALID', scope='pool_roi_2')
+
+        # auxilaries
+        out_actions = flatten_convolution(net)
+        out_scores = flatten_convolution(net)
+        self.layer_actions = tf.nn.softmax(out_actions)
+        self.layer_scores = tf.nn.softmax(out_scores)
+
+        # losses
+        self.loss_actions = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.label_tensor, logits=out_actions)
+        self.loss_cls = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.class_tensor, logits=out_scores)
+
+        return net
 
 def flatten_convolution(tensor_in):
     tendor_in_shape = tensor_in.get_shape()
@@ -209,6 +263,7 @@ if __name__ == '__main__':
     tensor_lb_class = tf.placeholder(tf.int32, shape=(None, ), name='lb_class')      # 2 actions
     action_history_tensor = tf.placeholder(tf.float32, shape=(None, 1, 1, ADNetwork.NUM_ACTIONS * ADNetwork.NUM_ACTION_HISTORY), name='action_history')
     is_training = tf.placeholder(tf.bool, name='is_training')
+    roi_pool = tf.placeholder(tf.bool, name="roi_switch")
 
     adnet = ADNetwork()
     adnet.create_network(input_node, tensor_lb_action, tensor_lb_class, action_history_tensor, is_training)

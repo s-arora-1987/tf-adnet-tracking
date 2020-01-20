@@ -27,6 +27,7 @@ def extract_region(img, bbox):
 
     # crop and resize
     crop = img[xy.y:xy.y+wh.y, xy.x:xy.x+wh.x, :]
+    #print (img.shape,crop.shape)
     resize = cv2.resize(crop, (112, 112))
     return resize
 
