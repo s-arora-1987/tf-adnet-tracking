@@ -13,4 +13,5 @@ This project is built on the code forked from https://github.com/ildoonet/tf-adn
 $ python runner.py by_dataset  --vid-path=./data/freeman1/
 ```
 
-
+### Results
+Please check the report here for outcomes [https://docs.google.com/document/d/1RQPuBbpwugLbGU61LGTf0zBbqJEC2tP3Hk71Egmd1Ss/edit?usp=sharing]
